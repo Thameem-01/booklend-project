@@ -1,0 +1,2125 @@
+<!doctype html>
+<html lang="en" class="h-full">
+ <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BookLend - Your Book Marketplace</title>
+  <script src="/_sdk/data_sdk.js"></script>
+  <script src="/_sdk/element_sdk.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+        body {
+            box-sizing: border-box;
+        }
+        
+        * {
+            box-sizing: border-box;
+        }
+        
+        .modal-overlay {
+            background-color: rgba(0, 0, 0, 0.5);
+        }
+        
+        .book-card {
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        .book-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
+        }
+        
+        .star-rating {
+            color: #fbbf24;
+        }
+        
+        .loading-spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #3b82f6;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .festival-offer {
+            background-color: #f2cce0;
+            padding: 20px;
+            margin: 20px;
+            border-radius: 10px;
+            border-left: 5px solid #c52222;
+        }
+
+        .festival-offer h2 {
+            color: #760f19;
+        }
+
+    </style>
+  <style>@view-transition { navigation: auto; }</style>
+        <!-- Fallback stubs for SDKs when /_sdk scripts are not available -->
+        <script>
+            // Provide minimal safe stubs so the page doesn't break during development
+            if (!window.dataSdk) {
+                (function () {
+                    const LS_KEY = 'booklend_store';
+                    let store = [];
+                    try { store = JSON.parse(localStorage.getItem(LS_KEY) || '[]') || []; } catch (e) { store = []; }
+                    let handler = null;
+                            window.dataSdk = {
+                                init: async (h) => {
+                                    handler = h || null;
+                                    // ensure async delivery like a real SDK
+                                    setTimeout(() => handler && handler.onDataChanged(store.slice()), 0);
+                                    return { isOk: true };
+                                },
+                                create: async (item) => {
+                                    try {
+                                          store.push(item);
+                                          try { localStorage.setItem(LS_KEY, JSON.stringify(store)); } catch (e) {}
+                                          handler && handler.onDataChanged && handler.onDataChanged(store.slice());
+                                        return { isOk: true, data: item };
+                                    } catch (e) {
+                                        return { isOk: false, error: e };
+                                    }
+                                },
+                                delete: async (item) => {
+                                    try {
+                                        // Accept either an object or an id
+                                        const id = item && (item.id || item) ;
+                                                        const idx = store.findIndex(s => s.id === id || s.id === (item && item.id));
+                                        if (idx === -1) {
+                                            return { isOk: false, error: 'not found' };
+                                        }
+                                        const removed = store.splice(idx, 1)[0];
+                                                        try { localStorage.setItem(LS_KEY, JSON.stringify(store)); } catch (e) {}
+                                                        handler && handler.onDataChanged && handler.onDataChanged(store.slice());
+                                        return { isOk: true, data: removed };
+                                    } catch (e) {
+                                        return { isOk: false, error: e };
+                                    }
+                                },
+                                // optional helpers used by some implementations
+                                list: async () => ({ isOk: true, data: store.slice() })
+                            };
+                    console.warn('Using fallback dataSdk stub — if you have a real SDK, ensure /_sdk/data_sdk.js is served.');
+                })();
+            }
+
+            if (!window.elementSdk) {
+                window.elementSdk = {
+                    init: async (opts) => {
+                        // call onConfigChange immediately if provided
+                        if (opts && typeof opts.onConfigChange === 'function') {
+                            setTimeout(() => opts.onConfigChange(opts.defaultConfig || {}), 0);
+                        }
+                        return { isOk: true };
+                    },
+                    setConfig: (c) => { console.info('elementSdk.setConfig (stub):', c); }
+                };
+                console.warn('Using fallback elementSdk stub — if you have a real SDK, ensure /_sdk/element_sdk.js is served.');
+            }
+                        // SheetJS for optional Excel exports (loaded async when needed)
+                        (function(){
+                            const s = document.createElement('script');
+                            s.src = 'https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js';
+                            s.async = true;
+                            s.onload = () => console.info('SheetJS loaded for Excel export');
+                            s.onerror = () => console.warn('Could not load SheetJS — Excel export will not work');
+                            document.head.appendChild(s);
+                        })();
+        </script>
+ </head>
+ <body class="h-full">
+  <div id="app" class="w-full h-full overflow-auto"></div>
+  <script>
+        // Configuration
+        const defaultConfig = {
+            background_color: "#f8fafc",
+            surface_color: "#ffffff",
+            text_color: "#1e293b",
+            primary_color: "#3b82f6",
+            secondary_color: "#10b981",
+            font_family: "system-ui",
+            font_size: 16,
+            site_title: "BookLend",
+            tagline: "Your Book Marketplace",
+            hero_heading: "Discover Your Next Great Read",
+            hero_subheading: "Buy, Borrow, or Lend Books",
+            cta_button: "Get Started"
+        };
+        
+        let config = { ...defaultConfig };
+        let currentUser = null;
+        let currentView = 'home';
+        let allData = [];
+        let cartItems = [];
+        let selectedCategory = 'all';
+        let searchQuery = '';
+
+        // Data handler for SDK
+        const dataHandler = {
+            onDataChanged(data) {
+                allData = data;
+                render();
+            }
+        };
+
+        // Initialize SDK
+        async function initApp() {
+            const initResult = await window.dataSdk.init(dataHandler);
+            if (!initResult.isOk) {
+                console.error("Failed to initialize data SDK");
+                return;
+            }
+            
+            // Add sample books if none exist
+            const existingBooks = getBooks();
+// Allow sample books only up to a limit (prevents too many duplicates)
+                if (existingBooks.length < 15) {
+                    await addSampleBooks();
+            }
+
+            
+            await window.elementSdk.init({
+                defaultConfig,
+                onConfigChange: async (newConfig) => {
+                    config = { ...config, ...newConfig };
+                    render();
+                },
+                mapToCapabilities: (cfg) => ({
+                    recolorables: [
+                        {
+                            get: () => cfg.background_color || defaultConfig.background_color,
+                            set: (value) => {
+                                cfg.background_color = value;
+                                window.elementSdk.setConfig({ background_color: value });
+                            }
+                        },
+                        {
+                            get: () => cfg.surface_color || defaultConfig.surface_color,
+                            set: (value) => {
+                                cfg.surface_color = value;
+                                window.elementSdk.setConfig({ surface_color: value });
+                            }
+                        },
+                        {
+                            get: () => cfg.text_color || defaultConfig.text_color,
+                            set: (value) => {
+                                cfg.text_color = value;
+                                window.elementSdk.setConfig({ text_color: value });
+                            }
+                        },
+                        {
+                            get: () => cfg.primary_color || defaultConfig.primary_color,
+                            set: (value) => {
+                                cfg.primary_color = value;
+                                window.elementSdk.setConfig({ primary_color: value });
+                            }
+                        },
+                        {
+                            get: () => cfg.secondary_color || defaultConfig.secondary_color,
+                            set: (value) => {
+                                cfg.secondary_color = value;
+                                window.elementSdk.setConfig({ secondary_color: value });
+                            }
+                        }
+                    ],
+                    borderables: [],
+                    fontEditable: {
+                        get: () => cfg.font_family || defaultConfig.font_family,
+                        set: (value) => {
+                            cfg.font_family = value;
+                            window.elementSdk.setConfig({ font_family: value });
+                        }
+                    },
+                    fontSizeable: {
+                        get: () => cfg.font_size || defaultConfig.font_size,
+                        set: (value) => {
+                            cfg.font_size = value;
+                            window.elementSdk.setConfig({ font_size: value });
+                        }
+                    }
+                }),
+                mapToEditPanelValues: (cfg) => new Map([
+                    ["site_title", cfg.site_title || defaultConfig.site_title],
+                    ["tagline", cfg.tagline || defaultConfig.tagline],
+                    ["hero_heading", cfg.hero_heading || defaultConfig.hero_heading],
+                    ["hero_subheading", cfg.hero_subheading || defaultConfig.hero_subheading],
+                    ["cta_button", cfg.cta_button || defaultConfig.cta_button]
+                ])
+            });
+            
+            render();
+        }
+
+        // Helper functions
+        function getUsers() {
+            return allData.filter(item => item.type === 'user');
+        }
+
+        function getBooks() {
+            return allData.filter(item => item.type === 'book');
+        }
+
+        function getTestimonials() {
+            return allData.filter(item => item.type === 'testimonial');
+        }
+
+        function getReturns() {
+            return allData.filter(item => item.type === 'return');
+        }
+
+        function getCartItemsForUser() {
+            if (!currentUser) return [];
+            return allData.filter(item => item.type === 'cart' && item.owner_id === currentUser.id);
+        }
+
+        function getCategories() {
+            const books = getBooks();
+            const categories = new Set(books.map(book => book.category));
+            return ['all', ...Array.from(categories)];
+        }
+
+        async function addSampleBooks() {
+            const sampleBooks = [
+                {
+                    id: 'book-' + Date.now() + '-1',
+                    type: 'book',
+                    title: 'The Great Gatsby',
+                    author: 'F. Scott Fitzgerald',
+                    category: 'Fiction',
+                    price: 12.99,
+                    availability: 'both',
+                    description: 'A classic American novel set in the Jazz Age that tells the story of the mysterious millionaire Jay Gatsby and his obsession with the beautiful Daisy Buchanan.',
+                    image: 'https://images.unsplash.com/photo-1543002588-bfa74002ed7e?w=400&h=600&fit=crop',
+                    owner_id: 'system',
+                    created_at: new Date().toISOString()
+                },
+                {
+                    id: 'book-' + Date.now() + '-2',
+                    type: 'book',
+                    title: 'To Kill a Mockingbird',
+                    author: 'Harper Lee',
+                    category: 'Fiction',
+                    price: 14.99,
+                    availability: 'buy',
+                    description: 'A gripping tale of racial injustice and childhood innocence in the American South during the 1930s.',
+                    image: 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?w=400&h=600&fit=crop',
+                    owner_id: 'system',
+                    created_at: new Date().toISOString()
+                },
+                {
+                    id: 'book-' + Date.now() + '-3',
+                    type: 'book',
+                    title: 'Sapiens',
+                    author: 'Yuval Noah Harari',
+                    category: 'Non-Fiction',
+                    price: 18.99,
+                    availability: 'both',
+                    description: 'A brief history of humankind that explores how Homo sapiens came to dominate the world.',
+                    image: 'https://images.unsplash.com/photo-1532012197267-da84d127e765?w=400&h=600&fit=crop',
+                    owner_id: 'system',
+                    created_at: new Date().toISOString()
+                },
+                {
+                    id: 'book-' + Date.now() + '-4',
+                    type: 'book',
+                    title: 'The Lean Startup',
+                    author: 'Eric Ries',
+                    category: 'Technology',
+                    price: 16.99,
+                    availability: 'buy',
+                    description: 'A methodology for developing businesses and products that aims to shorten product development cycles.',
+                    image: 'https://images.unsplash.com/photo-1519682337058-a94d519337bc?w=400&h=600&fit=crop',
+                    owner_id: 'system',
+                    created_at: new Date().toISOString()
+                },
+                {
+                    id: 'book-' + Date.now() + '-5',
+                    type: 'book',
+                    title: 'A Brief History of Time',
+                    author: 'Stephen Hawking',
+                    category: 'Science',
+                    price: 15.99,
+                    availability: 'borrow',
+                    description: 'A landmark volume in science writing by one of the great minds of our time, exploring the nature of the universe.',
+                    image: 'https://images.unsplash.com/photo-1589998059171-988d887df646?w=400&h=600&fit=crop',
+                    owner_id: 'system',
+                    created_at: new Date().toISOString()
+                },
+                {
+                    id: 'book-' + Date.now() + '-6',
+                    type: 'book',
+                    title: 'Educated',
+                    author: 'Tara Westover',
+                    category: 'Biography',
+                    price: 17.99,
+                    availability: 'both',
+                    description: 'A memoir about a young woman who grows up in a strict and abusive household but eventually escapes to learn about the wider world through education.',
+                    image: 'https://images.unsplash.com/photo-1495446815901-a7297e633e8d?w=400&h=600&fit=crop',
+                    owner_id: 'system',
+                    created_at: new Date().toISOString()
+                },
+                {
+                    id: 'book-' + Date.now() + '-7',
+                    type: 'book',
+                    title: 'Atomic Habits',
+                    author: 'James Clear',
+                    category: 'Self-Help',
+                    price: 16.99,
+                    availability: 'buy',
+                    description: 'An easy and proven way to build good habits and break bad ones through tiny changes that deliver remarkable results.',
+                    image: 'https://images.unsplash.com/photo-1512820790803-83ca734da794?w=400&h=600&fit=crop',
+                    owner_id: 'system',
+                    created_at: new Date().toISOString()
+                },
+                {
+                    id: 'book-' + Date.now() + '-8',
+                    type: 'book',
+                    title: 'Harry Potter and the Sorcerer\'s Stone',
+                    author: 'J.K. Rowling',
+                    category: 'Children',
+                    price: 13.99,
+                    availability: 'both',
+                    description: 'The first book in the beloved Harry Potter series about a young wizard discovering his magical heritage.',
+                    image: 'https://images.unsplash.com/photo-1621351183012-e2f9972dd9bf?w=400&h=600&fit=crop',
+                    owner_id: 'system',
+                    created_at: new Date().toISOString()
+                },
+                {
+                    id: 'book-' + Date.now() + '-9',
+                    type: 'book',
+                    title: 'The Diary of a Young Girl',
+                    author: 'Anne Frank',
+                    category: 'History',
+                    price: 11.99,
+                    availability: 'borrow',
+                    description: 'The powerful and poignant diary of a young Jewish girl hiding from the Nazis during World War II.',
+                    image: 'https://images.unsplash.com/photo-1481627834876-b7833e8f5570?w=400&h=600&fit=crop',
+                    owner_id: 'system',
+                    created_at: new Date().toISOString()
+                },
+                {
+                    id: 'book-' + Date.now() + '-10',
+                    type: 'book',
+                    title: 'New year special-children',
+                    author: 'Tami charles',
+                    category: 'Children',
+                    price: 59.99,
+                    availability: 'borrow',
+                    description: 'This delightful collection of New Year-themed books for children is perfect for celebrating the season and inspiring young readers to embrace new beginnings.',
+                    image: 'https://growingbookbybook.com/wp-content/uploads/2020/12/NEW-YEARS-BOOKS-FOR-KIDS.png',
+                    owner_id: 'system',
+                    created_at: new Date().toISOString()
+                }
+            ];
+
+            for (const book of sampleBooks) {
+                await window.dataSdk.create(book);
+            }
+        }
+
+        function filterBooks() {
+            let books = getBooks();
+            
+            if (selectedCategory !== 'all') {
+                books = books.filter(book => book.category === selectedCategory);
+            }
+            
+            if (searchQuery) {
+                const query = searchQuery.toLowerCase();
+                books = books.filter(book => 
+                    book.title.toLowerCase().includes(query) ||
+                    book.author.toLowerCase().includes(query)
+                );
+            }
+            
+            return books;
+        }
+
+        async function handleRegister(e) {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            const email = formData.get('email');
+            const password = formData.get('password');
+            const name = formData.get('name');
+            
+            const users = getUsers();
+            if (users.find(u => u.email === email)) {
+                showToast('Email already registered', 'error');
+                return;
+            }
+            
+            const newUser = {
+                id: Date.now().toString(),
+                type: 'user',
+                email,
+                password,
+                name,
+                created_at: new Date().toISOString()
+            };
+            
+            const result = await window.dataSdk.create(newUser);
+            if (result.isOk) {
+                showToast('Registration successful! Please login.', 'success');
+                currentView = 'login';
+                render();
+            } else {
+                showToast('Registration failed. Please try again.', 'error');
+            }
+        }
+
+        async function handleLogin(e) {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            const email = formData.get('email');
+            const password = formData.get('password');
+            
+            const users = getUsers();
+            const user = users.find(u => u.email === email && u.password === password);
+            
+            if (user) {
+                currentUser = user;
+                // record login event in dataset
+                try {
+                    const loginRecord = {
+                        id: 'login-' + Date.now().toString(),
+                        type: 'login',
+                        user_id: user.id,
+                        created_at: new Date().toISOString()
+                    };
+                    const loginRes = await window.dataSdk.create(loginRecord);
+                    if (!loginRes.isOk) console.warn('Failed to record login event', loginRes.error);
+                } catch (e) {
+                    console.warn('Error recording login event', e);
+                }
+                try {
+                    // ensure a lightweight profile exists/updated for this user
+                    await upsertProfileOnLogin(user);
+                } catch (e) {
+                    console.warn('Failed to upsert profile on login', e);
+                }
+
+                currentView = 'home';
+                showToast('Login successful!', 'success');
+                logActivity("LOGIN", "User logged in");
+                render();
+            } else {
+                showToast('Invalid email or password', 'error');
+            }
+        }
+
+        function handleLogout() {
+            currentUser = null;
+            cartItems = [];
+            currentView = 'home';
+            render();
+        }
+
+        async function handleAddBook(e) {
+            e.preventDefault();
+            if (!currentUser) {
+                showToast('Please login to add books', 'error');
+                return;
+            }
+            
+            const books = getBooks();
+            if (books.length >= 999) {
+                showToast('Maximum limit of 999 books reached', 'error');
+                return;
+            }
+            
+            const formData = new FormData(e.target);
+            const imageFile = formData.get('image');
+            let imageData = '';
+            
+            if (imageFile && imageFile.size > 0) {
+                imageData = await convertImageToBase64(imageFile);
+            }
+            
+            const newBook = {
+                id: Date.now().toString(),
+                type: 'book',
+                title: formData.get('title'),
+                author: formData.get('author'),
+                category: formData.get('category'),
+                price: parseFloat(formData.get('price')),
+                availability: formData.get('availability'),
+                description: formData.get('description'),
+                image: imageData,
+                owner_id: currentUser.id,
+                created_at: new Date().toISOString()
+            };
+            
+            const result = await window.dataSdk.create(newBook);
+            if (result.isOk) {
+                logActivity("ADD_BOOK", newBook.title);
+                showToast('Book added successfully!', 'success');
+                selectedCategory = 'all';
+                searchQuery = '';
+                currentView = 'browse';
+                render();
+            } else {
+                showToast('Failed to add book', 'error');
+            }
+        }
+
+        function convertImageToBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+        }
+
+        async function addToCart(bookId) {
+            if (!currentUser) {
+                showToast('Please login to add items to cart', 'error');
+                return;
+            }
+            
+            const cartItemsData = getCartItemsForUser();
+            if (cartItemsData.length >= 999) {
+                showToast('Cart limit reached', 'error');
+                return;
+            }
+            
+            const existingItem = cartItemsData.find(item => item.book_id === bookId);
+            if (existingItem) {
+                showToast('Book already in cart', 'error');
+                return;
+            }
+            
+            const newCartItem = {
+                id: Date.now().toString(),
+                type: 'cart',
+                book_id: bookId,
+                owner_id: currentUser.id,
+                quantity: 1,
+                created_at: new Date().toISOString()
+            };
+            
+            const result = await window.dataSdk.create(newCartItem);
+            if (result.isOk) {
+                showToast('Added to cart!', 'success');
+            } else {
+                showToast('Failed to add to cart', 'error');
+            }
+        }
+
+        async function removeFromCart(cartItemId) {
+            // Accepts an id (string) for robustness when called from inline handlers
+            const id = typeof cartItemId === 'object' ? (cartItemId.id || null) : cartItemId;
+            if (!id) {
+                showToast('Invalid cart item', 'error');
+                return;
+            }
+            const result = await window.dataSdk.delete(id);
+            if (result.isOk) {
+                showToast('Removed from cart', 'success');
+            } else {
+                showToast('Failed to remove from cart', 'error');
+            }
+        }
+
+        async function handleCheckout(e) {
+            // Open a modal to collect checkout details (payment method, address, return dates for borrowed books)
+            if (e && e.preventDefault) e.preventDefault();
+            const cartItemsData = getCartItemsForUser();
+            if (!cartItemsData || cartItemsData.length === 0) {
+                showToast('Your cart is empty', 'error');
+                return;
+            }
+            openCheckoutModal(cartItemsData);
+        }
+
+        function openCheckoutModal(cartItemsData) {
+            // Build modal HTML
+            const books = getBooks();
+            const cartWithBooks = cartItemsData.map(item => ({
+                ...item,
+                book: books.find(b => b.id === item.book_id)
+            })).filter(i => i.book);
+
+            const modal = document.createElement('div');
+            modal.id = 'checkoutModal';
+            modal.style.position = 'fixed';
+            modal.style.inset = '0';
+            modal.style.display = 'flex';
+            modal.style.alignItems = 'center';
+            modal.style.justifyContent = 'center';
+            modal.style.zIndex = '9999';
+            modal.innerHTML = `
+                <div class="modal-overlay" style="position:absolute;inset:0;background:rgba(0,0,0,0.6);"></div>
+                <div style="position:relative; background:${config.surface_color}; color:${config.text_color}; padding:1.25rem; width:90%; max-width:720px; border-radius:12px; z-index:10000;">
+                    <h3 style="margin-top:0;">Checkout</h3>
+                    <form id="checkoutModalForm">
+                        <div style="max-height: 40vh; overflow:auto; margin-bottom: 1rem;">
+                            ${cartWithBooks.map(item => `
+                                <div style="display:flex; gap:0.75rem; padding:0.5rem 0; border-bottom:1px solid rgba(0,0,0,0.06);">
+                                    <div style="flex:0 0 60px;">
+                                        ${item.book.image ? `<img src="${item.book.image}" style="width:60px;height:90px;object-fit:cover;border-radius:6px;">` : `<div style="width:60px;height:90px;display:flex;align-items:center;justify-content:center;font-size:20px;">📚</div>`}
+                                    </div>
+                                    <div style="flex:1;">
+                                        <div style="font-weight:600">${item.book.title}</div>
+                                        <div style="font-size:12px;opacity:0.8">by ${item.book.author}</div>
+                                        <div style="margin-top:6px;font-weight:700;color:${config.primary_color}">₹${item.book.price.toFixed(2)}</div>
+                                        ${item.book.availability === 'borrow' || item.book.availability === 'both' ? `
+                                            <div style="margin-top:8px;">
+                                                <label style="display:block;font-size:13px;margin-bottom:4px;">Return date for this book (if borrowing)</label>
+                                                <input type="date" name="return_date_${item.id}" style="padding:8px;border-radius:6px;border:1px solid #e2e8f0;width:100%;">
+                                            </div>
+                                        ` : ''}
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+
+                        <div style="margin-bottom:0.75rem;">
+                            <label style="display:block;font-weight:600;margin-bottom:6px;">Payment Method</label>
+                            <label style="margin-right:12px;"><input type="radio" name="payment_method" value="online" required> Online</label>
+                            <label><input type="radio" name="payment_method" value="cod"> Cash on Delivery (COD)</label>
+                        </div>
+
+                        <div style="margin-bottom:0.75rem;">
+                            <label style="display:block;font-weight:600;margin-bottom:6px;">Delivery Address</label>
+                            <textarea name="address" required style="width:100%;min-height:80px;padding:8px;border-radius:6px;border:1px solid #e2e8f0;"></textarea>
+                        </div>
+
+                        <!-- Card details (shown only when Online is selected) -->
+                        <div id="cardDetailsSection" style="margin-bottom:0.75rem; display:none;">
+                            <h4 style="margin:0 0 8px 0;font-size:14px;">Card Details</h4>
+                            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                                <input type="text" name="card_name" placeholder="Name on card" style="padding:8px;border-radius:6px;border:1px solid #e2e8f0;" />
+                                <input type="text" name="card_number" placeholder="Card number (xxxx xxxx xxxx xxxx)" style="padding:8px;border-radius:6px;border:1px solid #e2e8f0;" />
+                                <input type="text" name="card_expiry" placeholder="MM/YY" style="padding:8px;border-radius:6px;border:1px solid #e2e8f0;" />
+                                <input type="text" name="card_cvv" placeholder="CVV" style="padding:8px;border-radius:6px;border:1px solid #e2e8f0;" />
+                            </div>
+                            <p style="font-size:12px;opacity:0.8;margin-top:8px;">Card details are tokenized locally (demo). We store only masked info (last 4 digits) and a fake token.</p>
+                        </div>
+
+                        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px;">
+                            <button type="button" id="checkoutCancel" style="padding:0.5rem 0.75rem;border-radius:6px;background:transparent;border:1px solid rgba(0,0,0,0.06);">Cancel</button>
+                            <button type="submit" style="padding:0.5rem 0.75rem;border-radius:6px;background:${config.primary_color};color:white;border:none;">Place Order</button>
+                        </div>
+                    </form>
+                </div>
+            `;
+
+            document.body.appendChild(modal);
+
+            // Event listeners
+            const form = document.getElementById('checkoutModalForm');
+            const cancel = document.getElementById('checkoutCancel');
+            cancel && cancel.addEventListener('click', closeCheckoutModal);
+            // toggle card section when payment method changes
+            modal.querySelectorAll('input[name="payment_method"]').forEach(r => r.addEventListener('change', (ev) => {
+                const cardSection = document.getElementById('cardDetailsSection');
+                if (!cardSection) return;
+                if (ev.target.value === 'online') cardSection.style.display = 'block'; else cardSection.style.display = 'none';
+            }));
+            form && form.addEventListener('submit', (ev) => finalizeCheckout(ev, cartWithBooks));
+        }
+
+        function closeCheckoutModal() {
+            const modal = document.getElementById('checkoutModal');
+            if (modal) modal.remove();
+        }
+
+        async function finalizeCheckout(e, cartWithBooks) {
+            e.preventDefault();
+            const form = e.target;
+            const formData = new FormData(form);
+            const payment_method = formData.get('payment_method');
+            const address = formData.get('address');
+
+            if (!payment_method) {
+                showToast('Please choose a payment method', 'error');
+                return;
+            }
+            if (!address || address.trim().length < 5) {
+                showToast('Please enter a valid delivery address', 'error');
+                return;
+            }
+
+            // If online payment, validate card details and tokenize (demo)
+            let cardInfo = null;
+            if (payment_method === 'online') {
+                const card_name = formData.get('card_name') || '';
+                const card_number = (formData.get('card_number') || '').replace(/\s+/g, '');
+                const card_expiry = formData.get('card_expiry') || '';
+                const card_cvv = formData.get('card_cvv') || '';
+
+                if (card_name.trim().length < 2) { showToast('Enter cardholder name', 'error'); return; }
+                if (!/^\d{13,19}$/.test(card_number)) { showToast('Enter a valid card number', 'error'); return; }
+                if (!/^(0[1-9]|1[0-2])\/(\d{2})$/.test(card_expiry)) { showToast('Enter expiry as MM/YY', 'error'); return; }
+                if (!/^\d{3,4}$/.test(card_cvv)) { showToast('Enter a valid CVV', 'error'); return; }
+
+                // Fake tokenization: create a pseudo token and mask last4
+                const last4 = card_number.slice(-4);
+                const token = 'tok_' + Math.random().toString(36).slice(2, 12);
+                cardInfo = { token, last4, brand: 'card' };
+            }
+
+            // Collect borrow return dates
+            const itemsPayload = cartWithBooks.map(item => {
+                const returnDate = formData.get(`return_date_${item.id}`) || null;
+                return {
+                    cart_item_id: item.id,
+                    book_id: item.book.id,
+                    title: item.book.title,
+                    price: item.book.price,
+                    quantity: item.quantity,
+                    borrow_return_date: returnDate
+                };
+            });
+
+            const total = itemsPayload.reduce((s, it) => s + (it.price * (it.quantity || 1)), 0);
+
+            const order = {
+                id: 'order-' + Date.now().toString(),
+                type: 'order',
+                owner_id: currentUser ? currentUser.id : 'guest',
+                payment_method,
+                address,
+                card: cardInfo, // contains token and last4 for online payments
+                items: itemsPayload,
+                total,
+                created_at: new Date().toISOString()
+            };
+
+            // Save order and clear cart items
+            const createRes = await window.dataSdk.create(order);
+            if (!createRes.isOk) {
+                showToast('Failed to create order', 'error');
+                return;
+            }
+            logActivity(
+    "ORDER_PLACED",
+    `OrderID: ${order.id}, Total: ₹${order.total}`
+); 
+
+            // update user's profile with order summary in background
+            try {
+                await upsertProfileWithOrder(order);
+            } catch (e) {
+                console.warn('Failed to update profile with order', e);
+            }
+
+            // delete each cart item (by id)
+            for (const it of itemsPayload) {
+                await window.dataSdk.delete(it.cart_item_id);
+            }
+
+            showToast('Order placed successfully!', 'success');
+            closeCheckoutModal();
+            currentView = 'browse';
+            render();
+        }
+
+        async function submitTestimonial(e) {
+            e.preventDefault();
+            
+        // Email & Mobile validation
+        const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        const mobilePattern = /^[6-9]\d{9}$/;
+
+// Email validation (taken from logged-in user)
+        if (!emailPattern.test(currentUser.email)) {   
+            showToast("Invalid Email ID", "error");
+            return;
+        }
+
+// Mobile validation (example hardcoded / demo purpose)
+        const mobile = document.getElementById("mobile")?.value || "7483422237";
+        if (!mobilePattern.test(mobile)) { 
+             showToast("Invalid Mobile Number", "error");
+             return;
+        }
+
+            if (!currentUser) {
+                showToast('Please login to submit feedback', 'error');
+                return;
+            }
+            
+            
+            const testimonials = getTestimonials();
+            if (testimonials.length >= 999) {
+                showToast('Maximum testimonials limit reached', 'error');
+                return;
+            }
+            
+            const formData = new FormData(e.target);
+            
+            const newTestimonial = {
+                id: Date.now().toString(),
+                type: 'testimonial',
+                user_name: currentUser.name,
+                rating: parseInt(formData.get('rating')),
+                comment: formData.get('comment'),
+                created_at: new Date().toISOString()
+            };
+            
+            const result = await window.dataSdk.create(newTestimonial);
+            if (result.isOk) {
+                showToast('Thank you for your feedback!', 'success');
+                logActivity("FEEDBACK", newTestimonial.comment);
+                e.target.reset();
+                render();
+            } else {
+                showToast('Failed to submit feedback', 'error');
+            }
+        }
+
+        async function submitBookReview(e) {
+            e.preventDefault();
+            if (!currentUser) {
+                showToast('Please login to submit a review', 'error');
+                return;
+            }
+            
+            const testimonials = getTestimonials();
+            if (testimonials.length >= 999) {
+                showToast('Maximum reviews limit reached', 'error');
+                return;
+            }
+            
+            const formData = new FormData(e.target);
+            
+            const newReview = {
+                id: Date.now().toString(),
+                type: 'testimonial',
+                book_id: formData.get('book_id'),
+                user_name: currentUser.name,
+                rating: parseInt(formData.get('rating')),
+                comment: formData.get('comment'),
+                created_at: new Date().toISOString()
+            };
+            
+            const result = await window.dataSdk.create(newReview);
+           if (result.isOk) {
+              logActivity(
+                "BOOK_REVIEW",
+                    `Book: ${formData.get('book_id')} | Rating: ${formData.get('rating')} | ${formData.get('comment')}`);
+              showToast('Review submitted successfully!', 'success');
+              render();
+}
+else {
+                showToast('Failed to submit review', 'error');
+            }
+        }
+
+        function showToast(message, type) {
+            const toast = document.createElement('div');
+            toast.className = `fixed top-4 right-4 px-6 py-3 rounded-lg shadow-lg z-50 ${
+                type === 'success' ? 'bg-green-500' : 'bg-red-500'
+            } text-white font-medium`;
+            toast.textContent = message;
+            toast.style.fontFamily = `${config.font_family}, sans-serif`;
+            toast.style.fontSize = `${config.font_size}px`;
+            document.body.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.remove();
+            }, 3000);
+        }
+
+        // Render functions
+        function render() {
+            const app = document.getElementById('app');
+            const fontFamily = `${config.font_family}, sans-serif`;
+            
+            app.style.backgroundColor = config.background_color;
+            app.style.color = config.text_color;
+            app.style.fontFamily = fontFamily;
+            
+            let content = '';
+            
+            if (currentView === 'login') {
+                content = renderLogin();
+            } else if (currentView === 'register') {
+                content = renderRegister();
+            } else if (currentView === 'home') {
+                content = renderHome();
+            } else if (currentView === 'browse') {
+                content = renderBrowse();
+            } else if (currentView === 'add-book') {
+                content = renderAddBook();
+            } else if (currentView === 'orders') {
+                content = renderOrders();
+            } else if (currentView === 'cart') {
+                content = renderCart();
+            } else if (currentView === 'testimonials') {
+                content = renderTestimonials();
+            } else if (currentView.startsWith('book-')) {
+                const bookId = currentView.replace('book-', '');
+                content = renderBookDetails(bookId);
+            }
+            
+            app.innerHTML = `
+                ${renderNav()}
+                ${content}
+            `;
+            
+            attachEventListeners();
+        }
+
+function renderNav() {
+    const fontFamily = `${config.font_family}, sans-serif`;
+    const baseFontSize = config.font_size;
+    
+    return `
+        <nav style="background-color: ${config.surface_color}; font-family: ${fontFamily}; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+            <div style="max-width: 1200px; margin: 0 auto; padding: 1rem 1.5rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
+                
+                <!-- Logo -->
+                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    <svg width="40" height="40" viewBox="0 0 40 40" style="flex-shrink: 0;">
+                        <rect width="40" height="40" rx="8" fill="${config.primary_color}"/>
+                        <path d="M12 10 L12 30 L20 26 L28 30 L28 10 L20 14 Z" fill="${config.surface_color}"/>
+                        <circle cx="20" cy="20" r="3" fill="${config.secondary_color}"/>
+                    </svg>
+                    <div>
+                        <div style="font-size: ${baseFontSize * 1.5}px; font-weight: bold; color: ${config.text_color};">
+                            ${config.site_title}
+                        </div>
+                        <div style="font-size: ${baseFontSize * 0.85}px; color: ${config.text_color}; opacity: 0.7;">
+                            ${config.tagline}
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Navigation buttons -->
+                <div style="display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
+                    ${currentUser ? `
+                        <button onclick="navigateTo('home')" style="padding: 0.5rem 1rem; background: none; border: none; cursor: pointer;">Home</button>
+                        <button onclick="navigateTo('browse')" style="padding: 0.5rem 1rem; background: none; border: none; cursor: pointer;">Browse</button>
+                        <button onclick="navigateTo('add-book')" style="padding: 0.5rem 1rem; background: none; border: none; cursor: pointer;">Add Book</button>
+
+                        <button onclick="navigateTo('cart')" style="padding: 0.5rem 1rem; background: none; border: none; cursor: pointer; position: relative;">
+                            Cart
+                            ${getCartItemsForUser().length > 0 ? `
+                                <span style="position:absolute; top:0; right:0;
+                                             background:${config.secondary_color};
+                                             color:white;
+                                             border-radius:50%;
+                                             width:20px;
+                                             height:20px;
+                                             display:flex;
+                                             align-items:center;
+                                             justify-content:center;
+                                             font-size:${baseFontSize * 0.75}px;">
+                                    ${getCartItemsForUser().length}
+                                </span>
+                            ` : ''}
+                        </button>
+
+                        <span style="font-size: ${baseFontSize * 0.9}px;">
+                            Hi, ${currentUser.name}
+                        </span>
+
+                        <button onclick="navigateTo('orders')" style="padding: 0.5rem 1rem; background: none; border: 1px solid ${config.primary_color}; color: ${config.primary_color}; cursor: pointer;">
+                            Orders
+                        </button>
+
+                        <button onclick="handleLogout()" style="padding: 0.5rem 1rem; background-color: ${config.primary_color}; color: white; border: none; cursor: pointer;">
+                            Logout
+                        </button>
+                    ` : `
+                        <button onclick="navigateTo('login')" style="padding: 0.5rem 1rem; border: 1px solid ${config.primary_color}; background: none; color: ${config.primary_color}; cursor: pointer;">
+                            Login
+                        </button>
+                        <button onclick="navigateTo('register')" style="padding: 0.5rem 1rem; background-color: ${config.primary_color}; color: white; border: none; cursor: pointer;">
+                            Sign Up
+                        </button>
+                    `}
+                </div>
+            </div>
+        </nav>
+    `;
+}
+
+        function renderLogin() {
+            const fontFamily = `${config.font_family}, sans-serif`;
+            const baseFontSize = config.font_size;
+            
+            return `
+                <div style="min-height: calc(100% - 80px); display: flex; align-items: center; justify-content: center; padding: 2rem;">
+                    <div style="background-color: ${config.surface_color}; padding: 2rem; border-radius: 1rem; box-shadow: 0 4px 6px rgba(0,0,0,0.1); width: 100%; max-width: 400px;">
+                        <h2 style="font-size: ${baseFontSize * 2}px; font-weight: bold; margin-bottom: 1.5rem; text-align: center; color: ${config.text_color}; font-family: ${fontFamily};">Login</h2>
+                        <form id="loginForm">
+                            <div style="margin-bottom: 1rem;">
+                                <label for="email" style="display: block; margin-bottom: 0.5rem; font-size: ${baseFontSize}px; color: ${config.text_color}; font-family: ${fontFamily};">Email</label>
+                                <input type="email" id="email" name="email" required style="width: 100%; padding: 0.75rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-family: ${fontFamily};">
+                            </div>
+                            <div style="margin-bottom: 1.5rem;">
+                                <label for="password" style="display: block; margin-bottom: 0.5rem; font-size: ${baseFontSize}px; color: ${config.text_color}; font-family: ${fontFamily};">Password</label>
+                                <input type="password" id="password" name="password" required style="width: 100%; padding: 0.75rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-family: ${fontFamily};">
+                            </div>
+                            <button type="submit" style="width: 100%; padding: 0.75rem; background-color: ${config.primary_color}; color: white; border: none; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-weight: 600; cursor: pointer; font-family: ${fontFamily};">Login</button>
+                        </form>
+                        <p style="text-align: center; margin-top: 1rem; font-size: ${baseFontSize * 0.9}px; color: ${config.text_color}; font-family: ${fontFamily};">
+                            Don't have an account? <button onclick="navigateTo('register')" style="color: ${config.primary_color}; background: none; border: none; cursor: pointer; text-decoration: underline; font-size: ${baseFontSize * 0.9}px; font-family: ${fontFamily};">Sign up</button>
+                        </p>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderRegister() {
+            const fontFamily = `${config.font_family}, sans-serif`;
+            const baseFontSize = config.font_size;
+            
+            return `
+                <div style="min-height: calc(100% - 80px); display: flex; align-items: center; justify-content: center; padding: 2rem;">
+                    <div style="background-color: ${config.surface_color}; padding: 2rem; border-radius: 1rem; box-shadow: 0 4px 6px rgba(0,0,0,0.1); width: 100%; max-width: 400px;">
+                        <h2 style="font-size: ${baseFontSize * 2}px; font-weight: bold; margin-bottom: 1.5rem; text-align: center; color: ${config.text_color}; font-family: ${fontFamily};">Sign Up</h2>
+                        <form id="registerForm">
+                            <div style="margin-bottom: 1rem;">
+                                <label for="name" style="display: block; margin-bottom: 0.5rem; font-size: ${baseFontSize}px; color: ${config.text_color}; font-family: ${fontFamily};">Full Name</label>
+                                <input type="text" id="name" name="name" required style="width: 100%; padding: 0.75rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-family: ${fontFamily};">
+                            </div>
+                            <div style="margin-bottom: 1rem;">
+                                <label for="reg-email" style="display: block; margin-bottom: 0.5rem; font-size: ${baseFontSize}px; color: ${config.text_color}; font-family: ${fontFamily};">Email</label>
+                                <input type="email" id="reg-email" name="email" required style="width: 100%; padding: 0.75rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-family: ${fontFamily};">
+                            </div>
+                            <div style="margin-bottom: 1.5rem;">
+                                <label for="reg-password" style="display: block; margin-bottom: 0.5rem; font-size: ${baseFontSize}px; color: ${config.text_color}; font-family: ${fontFamily};">Password</label>
+                                <input type="password" id="reg-password" name="password" required style="width: 100%; padding: 0.75rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-family: ${fontFamily};">
+                            </div>
+                            <button type="submit" style="width: 100%; padding: 0.75rem; background-color: ${config.primary_color}; color: white; border: none; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-weight: 600; cursor: pointer; font-family: ${fontFamily};">Sign Up</button>
+                        </form>
+                        <p style="text-align: center; margin-top: 1rem; font-size: ${baseFontSize * 0.9}px; color: ${config.text_color}; font-family: ${fontFamily};">
+                            Already have an account? <button onclick="navigateTo('login')" style="color: ${config.primary_color}; background: none; border: none; cursor: pointer; text-decoration: underline; font-size: ${baseFontSize * 0.9}px; font-family: ${fontFamily};">Login</button>
+                        </p>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderHome() {
+            const fontFamily = `${config.font_family}, sans-serif`;
+            const baseFontSize = config.font_size;
+            const testimonials = getTestimonials().slice(0, 3);
+            
+            return `
+                <main>
+
+                      <!--   <section class="festival-offer">
+                        <h2><b>Christmas / New Year Special Offers</b></h2>
+                        <p>
+                            BookLend offers special Christmas and New Year discounts.
+                            Users get <b> 10% OFF </b> on orders above <b> ₹1000</b> during the festive season.
+                        </p>
+                    </section> -->
+
+
+                    
+                      <section style="padding: 4rem 1.5rem; text-align: center;">
+                        <div style="max-width: 800px; margin: 0 auto;">
+                            <h1 style="font-size: ${baseFontSize * 3}px; font-weight: bold; margin-bottom: 1rem; color: ${config.text_color}; font-family: ${fontFamily};">${config.hero_heading}</h1>
+                            <p style="font-size: ${baseFontSize * 1.25}px; margin-bottom: 2rem; color: ${config.text_color}; opacity: 0.8; font-family: ${fontFamily};">${config.hero_subheading}</p>
+                            <button onclick="navigateTo('browse')" style="padding: 1rem 2rem; background-color: ${config.primary_color}; color: white; border: none; border-radius: 0.5rem; font-size: ${baseFontSize * 1.1}px; font-weight: 600; cursor: pointer; font-family: ${fontFamily};">${config.cta_button}</button>
+                        </div>
+                    </section>
+                
+                    <section style="padding: 3rem 1.5rem; background-color: ${config.surface_color};">
+                        <div style="max-width: 1200px; margin: 0 auto;">
+                            <h2 style="font-size: ${baseFontSize * 2}px; font-weight: bold; text-align: center; margin-bottom: 2rem; color: ${config.text_color}; font-family: ${fontFamily};">How It Works</h2>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 2rem;">
+                                <div style="text-align: center; padding: 1.5rem;">
+                                    <div style="width: 80px; height: 80px; margin: 0 auto 1rem; background-color: ${config.primary_color}; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; font-size: ${baseFontSize * 2}px; font-weight: bold; font-family: ${fontFamily};">1</div>
+                                    <h3 style="font-size: ${baseFontSize * 1.25}px; font-weight: 600; margin-bottom: 0.5rem; color: ${config.text_color}; font-family: ${fontFamily};">Browse Books</h3>
+                                    <p style="font-size: ${baseFontSize * 0.9}px; color: ${config.text_color}; opacity: 0.7; font-family: ${fontFamily};">Explore our vast collection of books across various categories</p>
+                                </div>
+                                <div style="text-align: center; padding: 1.5rem;">
+                                    <div style="width: 80px; height: 80px; margin: 0 auto 1rem; background-color: ${config.secondary_color}; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; font-size: ${baseFontSize * 2}px; font-weight: bold; font-family: ${fontFamily};">2</div>
+                                    <h3 style="font-size: ${baseFontSize * 1.25}px; font-weight: 600; margin-bottom: 0.5rem; color: ${config.text_color}; font-family: ${fontFamily};">Choose Option</h3>
+                                    <p style="font-size: ${baseFontSize * 0.9}px; color: ${config.text_color}; opacity: 0.7; font-family: ${fontFamily};">Buy, borrow, or lend books according to your needs</p>
+                                </div>
+                                <div style="text-align: center; padding: 1.5rem;">
+                                    <div style="width: 80px; height: 80px; margin: 0 auto 1rem; background-color: ${config.primary_color}; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; font-size: ${baseFontSize * 2}px; font-weight: bold; font-family: ${fontFamily};">3</div>
+                                    <h3 style="font-size: ${baseFontSize * 1.25}px; font-weight: 600; margin-bottom: 0.5rem; color: ${config.text_color}; font-family: ${fontFamily};">Enjoy Reading</h3>
+                                    <p style="font-size: ${baseFontSize * 0.9}px; color: ${config.text_color}; opacity: 0.7; font-family: ${fontFamily};">Get your books delivered and start your reading journey</p>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+                    
+                    ${testimonials.length > 0 ? `
+                        <section style="padding: 3rem 1.5rem;">
+                            <div style="max-width: 1200px; margin: 0 auto;">
+                                <h2 style="font-size: ${baseFontSize * 2}px; font-weight: bold; text-align: center; margin-bottom: 2rem; color: ${config.text_color}; font-family: ${fontFamily};">What Our Users Say</h2>
+                                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem;">
+                                    ${testimonials.map(t => `
+                                        <div style="background-color: ${config.surface_color}; padding: 1.5rem; border-radius: 0.75rem; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                                            <div style="display: flex; gap: 0.25rem; margin-bottom: 0.75rem;">
+                                                ${Array(t.rating).fill('★').map(() => `<span style="color: ${config.secondary_color}; font-size: ${baseFontSize * 1.25}px;">★</span>`).join('')}
+                                            </div>
+                                            <p style="font-size: ${baseFontSize}px; margin-bottom: 1rem; color: ${config.text_color}; font-family: ${fontFamily};">${t.comment}</p>
+                                            <p style="font-size: ${baseFontSize * 0.9}px; font-weight: 600; color: ${config.text_color}; font-family: ${fontFamily};">- ${t.user_name}</p>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                                <div style="text-align: center; margin-top: 2rem;">
+                                    <button onclick="navigateTo('testimonials')" style="padding: 0.75rem 1.5rem; background: none; border: 2px solid ${config.primary_color}; color: ${config.primary_color}; border-radius: 0.5rem; font-size: ${baseFontSize}px; cursor: pointer; font-family: ${fontFamily};">View All & Share Yours</button>
+                                </div>
+                            </div>
+                        </section>
+                    ` : ''}
+                    <!-- Floating Coupon Button      (lightblue ,  🎟️ ) -->
+                                <div style="
+                                        position: fixed;
+                                        right: 20px;
+                                        bottom: 40%;
+                                        z-index: 999;
+                            ">
+                                <button onclick="toggleCoupon()"
+                                    style="
+                                    background-color: ;
+                                    color: white;
+                                    border: none;
+                                    border-radius: 50%;
+                                    width: 60px;
+                                    height: 60px;
+                                    font-size: 24px;
+                                    cursor: pointer;">
+                                   
+                                </button>
+                            </div>
+
+                            <!-- Coupon Box -->
+                            <div id="couponBox"
+                                style="
+                                display:none;
+                                position: fixed;
+                                right: 20px;
+                                bottom: 48%;
+                                background: #ecfeff;
+                                padding: 15px;
+                                border-radius: 10px;
+                                box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+                                z-index: 999;">
+                                
+                                <h4>Festival Coupon</h4>
+                                <p><b>BOOK10</b></p>
+                                <p>Get 10% OFF above ₹1000</p>
+                            </div>
+
+                </main>
+            `;
+        }
+
+        function renderBrowse() {
+            const fontFamily = `${config.font_family}, sans-serif`;
+            const baseFontSize = config.font_size;
+            const books = filterBooks();
+            const categories = getCategories();
+            
+            return `
+                <main style="padding: 2rem 1.5rem;">
+                    <div style="max-width: 1200px; margin: 0 auto;">
+                        <h2 style="font-size: ${baseFontSize * 2}px; font-weight: bold; margin-bottom: 2rem; color: ${config.text_color}; font-family: ${fontFamily};">Browse Books</h2>
+                        
+                        <div style="display: flex; flex-wrap: wrap; gap: 1rem; margin-bottom: 2rem;">
+                            <input type="text" id="searchInput" placeholder="Search by title or author..." value="${searchQuery}" style="flex: 1; min-width: 250px; padding: 0.75rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-family: ${fontFamily};">
+                            <select id="categoryFilter" style="padding: 0.75rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-family: ${fontFamily};">
+                                ${categories.map(cat => `
+                                    <option value="${cat}" ${cat === selectedCategory ? 'selected' : ''}>${cat === 'all' ? 'All Categories' : cat}</option>
+                                `).join('')}
+                            </select>
+                        </div>
+                        
+                        ${books.length === 0 ? `
+                            <div style="text-align: center; padding: 3rem;">
+                                <p style="font-size: ${baseFontSize * 1.25}px; color: ${config.text_color}; opacity: 0.7; font-family: ${fontFamily};">No books found. ${currentUser ? 'Be the first to add one!' : 'Please login to add books.'}</p>
+                            </div>
+                        ` : `
+                            <div style="display: grid; grid-template-columns: repeat(4, minmax(220px, 1fr)); gap: 1.5rem;">
+                                ${books.map(book => `
+                                    <div class="book-card" style="background-color: ${config.surface_color}; border-radius: 0.75rem; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="navigateTo('book-${book.id}')">
+                                        <div style="width: 100%; height: 200px; background: linear-gradient(135deg, ${config.primary_color}, ${config.secondary_color}); display: flex; align-items: center; justify-content: center;">
+                                            ${book.image ? `
+                                                <img src="${book.image}" alt="${book.title}" style="width: 100%; height: 100%; object-fit: cover;">
+                                            ` : `
+                                                <span style="font-size: ${baseFontSize * 3}px; color: white;">📚</span>
+                                            `}
+                                        </div>
+                                        <div style="padding: 1rem;">
+                                            <h3 style="font-size: ${baseFontSize * 1.1}px; font-weight: 600; margin-bottom: 0.5rem; color: ${config.text_color}; font-family: ${fontFamily};">${book.title}</h3>
+                                            <p style="font-size: ${baseFontSize * 0.9}px; color: ${config.text_color}; opacity: 0.7; margin-bottom: 0.5rem; font-family: ${fontFamily};">by ${book.author}</p>
+                                            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 1rem;">
+                                                <span style="font-size: ${baseFontSize * 1.1}px; font-weight: bold; color: ${config.primary_color}; font-family: ${fontFamily};">₹${book.price.toFixed(2)}</span>
+                                                <span style="padding: 0.25rem 0.75rem; background-color: ${config.secondary_color}; color: white; border-radius: 1rem; font-size: ${baseFontSize * 0.85}px; font-family: ${fontFamily};">${book.availability}</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        `}
+                    </div>
+                </main>
+            `;
+        }
+
+        function renderBookDetails(bookId) {
+            const fontFamily = `${config.font_family}, sans-serif`;
+            const baseFontSize = config.font_size;
+            const book = getBooks().find(b => b.id === bookId);
+            
+            if (!book) {
+                return `
+                    <main style="padding: 2rem 1.5rem;">
+                        <div style="max-width: 1200px; margin: 0 auto; text-align: center;">
+                            <p style="font-size: ${baseFontSize * 1.25}px; color: ${config.text_color}; font-family: ${fontFamily};">Book not found</p>
+                            <button onclick="navigateTo('browse')" style="margin-top: 1rem; padding: 0.75rem 1.5rem; background-color: ${config.primary_color}; color: white; border: none; border-radius: 0.5rem; cursor: pointer; font-size: ${baseFontSize}px; font-family: ${fontFamily};">Back to Browse</button>
+                        </div>
+                    </main>
+                `;
+            }
+            
+            // Get book-specific reviews
+            const bookReviews = getTestimonials().filter(t => t.book_id === book.id);
+            const avgRating = bookReviews.length > 0 
+                ? (bookReviews.reduce((sum, r) => sum + r.rating, 0) / bookReviews.length).toFixed(1)
+                : 0;
+            
+            return `
+                <main style="padding: 2rem 1.5rem;">
+                    <div style="max-width: 1200px; margin: 0 auto;">
+                        <button onclick="navigateTo('browse')" style="margin-bottom: 1.5rem; padding: 0.5rem 1rem; background: none; border: 1px solid ${config.primary_color}; color: ${config.primary_color}; border-radius: 0.5rem; cursor: pointer; font-size: ${baseFontSize}px; font-family: ${fontFamily};">← Back to Browse</button>
+                        
+                        <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 2rem; background-color: ${config.surface_color}; padding: 2rem; border-radius: 1rem; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 2rem;">
+                            <div style="width: 100%; aspect-ratio: 3/4; background: linear-gradient(135deg, ${config.primary_color}, ${config.secondary_color}); border-radius: 0.75rem; display: flex; align-items: center; justify-content: center; overflow: hidden;">
+                                ${book.image ? `
+                                    <img src="${book.image}" alt="${book.title}" style="width: 100%; height: 100%; object-fit: cover;">
+                                ` : `
+                                    <span style="font-size: ${baseFontSize * 6}px; color: white;">📚</span>
+                                `}
+                            </div>
+                            
+                            <div>
+                                <h1 style="font-size: ${baseFontSize * 2.5}px; font-weight: bold; margin-bottom: 0.5rem; color: ${config.text_color}; font-family: ${fontFamily};">${book.title}</h1>
+                                <p style="font-size: ${baseFontSize * 1.25}px; color: ${config.text_color}; opacity: 0.7; margin-bottom: 1rem; font-family: ${fontFamily};">by ${book.author}</p>
+                                
+                                ${bookReviews.length > 0 ? `
+                                    <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem;">
+                                        <div style="display: flex; gap: 0.25rem;">
+                                            ${Array(Math.floor(avgRating)).fill('★').map(() => `<span style="color: ${config.secondary_color}; font-size: ${baseFontSize * 1.25}px;">★</span>`).join('')}
+                                            ${avgRating % 1 !== 0 ? `<span style="color: ${config.secondary_color}; font-size: ${baseFontSize * 1.25}px;">★</span>` : ''}
+                                            ${Array(5 - Math.ceil(avgRating)).fill('☆').map(() => `<span style="color: #d1d5db; font-size: ${baseFontSize * 1.25}px;">☆</span>`).join('')}
+                                        </div>
+                                        <span style="font-size: ${baseFontSize}px; color: ${config.text_color}; font-family: ${fontFamily};">${avgRating} (${bookReviews.length} reviews)</span>
+                                    </div>
+                                ` : ''}
+                                
+                                <div style="display: flex; gap: 1rem; margin-bottom: 1.5rem;">
+                                    <span style="padding: 0.5rem 1rem; background-color: ${config.primary_color}; color: white; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-family: ${fontFamily};">${book.category}</span>
+                                    <span style="padding: 0.5rem 1rem; background-color: ${config.secondary_color}; color: white; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-family: ${fontFamily};">${book.availability === 'both' ? 'Buy & Borrow' : book.availability === 'buy' ? 'Buy Only' : 'Borrow Only'}</span>
+                                </div>
+                                
+                                <p style="font-size: ${baseFontSize * 2}px; font-weight: bold; color: ${config.primary_color}; margin-bottom: 1.5rem; font-family: ${fontFamily};">₹${book.price.toFixed(2)}</p>
+                                
+                                <p style="font-size: ${baseFontSize}px; line-height: 1.6; color: ${config.text_color}; margin-bottom: 2rem; font-family: ${fontFamily};">${book.description}</p>
+                                
+                                ${currentUser ? `
+                                    <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
+                                        ${book.availability !== 'borrow' ? `
+                                            <button onclick="addToCart('${book.id}')" style="flex: 1; min-width: 150px; padding: 1rem; background-color: ${config.primary_color}; color: white; border: none; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-weight: 600; cursor: pointer; font-family: ${fontFamily};">Add to Cart</button>
+                                        ` : ''}
+                                        ${book.availability === 'borrow' || book.availability === 'both' ? `
+                                            <button onclick="addToCart('${book.id}')" style="flex: 1; min-width: 150px; padding: 1rem; background-color: ${config.secondary_color}; color: white; border: none; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-weight: 600; cursor: pointer; font-family: ${fontFamily};">Borrow Now</button>
+                                        ` : ''}
+                                    </div>
+                                ` : `
+                                    <p style="padding: 1rem; background-color: rgba(59, 130, 246, 0.1); border-radius: 0.5rem; color: ${config.text_color}; font-size: ${baseFontSize}px; font-family: ${fontFamily};">Please <button onclick="navigateTo('login')" style="color: ${config.primary_color}; background: none; border: none; cursor: pointer; text-decoration: underline; font-size: ${baseFontSize}px; font-family: ${fontFamily};">login</button> to purchase or borrow this book</p>
+                                `}
+                            </div>
+                        </div>
+                        
+                        <!-- Reviews Section -->
+                        <div style="background-color: ${config.surface_color}; padding: 2rem; border-radius: 1rem; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                            <h2 style="font-size: ${baseFontSize * 2}px; font-weight: bold; margin-bottom: 1.5rem; color: ${config.text_color}; font-family: ${fontFamily};">Reviews & Ratings</h2>
+                            
+                            ${currentUser ? `
+                                <div style="background-color: ${config.background_color}; padding: 1.5rem; border-radius: 0.75rem; margin-bottom: 2rem;">
+                                    <h3 style="font-size: ${baseFontSize * 1.25}px; font-weight: 600; margin-bottom: 1rem; color: ${config.text_color}; font-family: ${fontFamily};">Write a Review</h3>
+                                    <form id="bookReviewForm">
+                                        <input type="hidden" name="book_id" value="${book.id}">
+                                        <div style="margin-bottom: 1rem;">
+                                            <label for="review-rating" style="display: block; margin-bottom: 0.5rem; font-size: ${baseFontSize}px; color: ${config.text_color}; font-family: ${fontFamily};">Rating</label>
+                                            <select id="review-rating" name="rating" required style="width: 100%; padding: 0.75rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-family: ${fontFamily};">
+                                                <option value="5">5 Stars - Excellent</option>
+                                                <option value="4">4 Stars - Very Good</option>
+                                                <option value="3">3 Stars - Good</option>
+                                                <option value="2">2 Stars - Fair</option>
+                                                <option value="1">1 Star - Poor</option>
+                                            </select>
+                                        </div>
+                                        <div style="margin-bottom: 1rem;">
+                                            <label for="review-comment" style="display: block; margin-bottom: 0.5rem; font-size: ${baseFontSize}px; color: ${config.text_color}; font-family: ${fontFamily};">Your Review</label>
+                                            <textarea id="review-comment" name="comment" rows="3" required style="width: 100%; padding: 0.75rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-family: ${fontFamily};"></textarea>
+                                        </div>
+                                        <button type="submit" style="padding: 0.75rem 1.5rem; background-color: ${config.primary_color}; color: white; border: none; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-weight: 600; cursor: pointer; font-family: ${fontFamily};">Submit Review</button>
+                                    </form>
+                                </div>
+                            ` : `
+                                <div style="background-color: ${config.background_color}; padding: 1.5rem; border-radius: 0.75rem; margin-bottom: 2rem; text-align: center;">
+                                    <p style="font-size: ${baseFontSize}px; color: ${config.text_color}; margin-bottom: 1rem; font-family: ${fontFamily};">Please login to write a review</p>
+                                    <button onclick="navigateTo('login')" style="padding: 0.75rem 1.5rem; background-color: ${config.primary_color}; color: white; border: none; border-radius: 0.5rem; cursor: pointer; font-size: ${baseFontSize}px; font-family: ${fontFamily};">Login</button>
+                                </div>
+                            `}
+                            
+                            ${bookReviews.length === 0 ? `
+                                <p style="text-align: center; padding: 2rem; font-size: ${baseFontSize}px; color: ${config.text_color}; opacity: 0.7; font-family: ${fontFamily};">No reviews yet. Be the first to review this book!</p>
+                            ` : `
+                                <div style="display: grid; gap: 1rem;">
+                                    ${bookReviews.map(review => `
+                                        <div style="background-color: ${config.background_color}; padding: 1.5rem; border-radius: 0.75rem;">
+                                            <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 0.75rem;">
+                                                <div>
+                                                    <p style="font-size: ${baseFontSize}px; font-weight: 600; color: ${config.text_color}; margin-bottom: 0.25rem; font-family: ${fontFamily};">${review.user_name}</p>
+                                                    <div style="display: flex; gap: 0.25rem;">
+                                                        ${Array(review.rating).fill('★').map(() => `<span style="color: ${config.secondary_color}; font-size: ${baseFontSize}px;">★</span>`).join('')}
+                                                        ${Array(5 - review.rating).fill('☆').map(() => `<span style="color: #d1d5db; font-size: ${baseFontSize}px;">☆</span>`).join('')}
+                                                    </div>
+                                                </div>
+                                                <span style="font-size: ${baseFontSize * 0.85}px; color: ${config.text_color}; opacity: 0.6; font-family: ${fontFamily};">${new Date(review.created_at).toLocaleDateString()}</span>
+                                            </div>
+                                            <p style="font-size: ${baseFontSize}px; line-height: 1.6; color: ${config.text_color}; font-family: ${fontFamily};">${review.comment}</p>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            `}
+                        </div>
+                    </div>
+                </main>
+            `;
+        }
+
+        function renderAddBook() {
+            const fontFamily = `${config.font_family}, sans-serif`;
+            const baseFontSize = config.font_size;
+            
+            return `
+                <main style="padding: 2rem 1.5rem;">
+                    <div style="max-width: 800px; margin: 0 auto;">
+                        <h2 style="font-size: ${baseFontSize * 2}px; font-weight: bold; margin-bottom: 2rem; color: ${config.text_color}; font-family: ${fontFamily};">Add New Book</h2>
+                        
+                        <form id="addBookForm" style="background-color: ${config.surface_color}; padding: 2rem; border-radius: 1rem; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                            <div style="margin-bottom: 1.5rem;">
+                                <label for="book-title" style="display: block; margin-bottom: 0.5rem; font-size: ${baseFontSize}px; font-weight: 600; color: ${config.text_color}; font-family: ${fontFamily};">Book Title</label>
+                                <input type="text" id="book-title" name="title" required style="width: 100%; padding: 0.75rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-family: ${fontFamily};">
+                            </div>
+                            
+                            <div style="margin-bottom: 1.5rem;">
+                                <label for="book-author" style="display: block; margin-bottom: 0.5rem; font-size: ${baseFontSize}px; font-weight: 600; color: ${config.text_color}; font-family: ${fontFamily};">Author</label>
+                                <input type="text" id="book-author" name="author" required style="width: 100%; padding: 0.75rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-family: ${fontFamily};">
+                            </div>
+                            
+                            <div style="margin-bottom: 1.5rem;">
+                                <label for="book-category" style="display: block; margin-bottom: 0.5rem; font-size: ${baseFontSize}px; font-weight: 600; color: ${config.text_color}; font-family: ${fontFamily};">Category</label>
+                                <select id="book-category" name="category" required style="width: 100%; padding: 0.75rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-family: ${fontFamily};">
+                                    <option value="Fiction">Fiction</option>
+                                    <option value="Non-Fiction">Non-Fiction</option>
+                                    <option value="Science">Science</option>
+                                    <option value="Technology">Technology</option>
+                                    <option value="History">History</option>
+                                    <option value="Biography">Biography</option>
+                                    <option value="Self-Help">Self-Help</option>
+                                    <option value="Children">Children</option>
+                                </select>
+                            </div>
+                            
+                            <div style="margin-bottom: 1.5rem;">
+                                <label for="book-price" style="display: block; margin-bottom: 0.5rem; font-size: ${baseFontSize}px; font-weight: 600; color: ${config.text_color}; font-family: ${fontFamily};">Price (₹)</label>
+                                <input type="number" id="book-price" name="price" step="0.01" min="0" required style="width: 100%; padding: 0.75rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-family: ${fontFamily};">
+                            </div>
+                            
+                            <div style="margin-bottom: 1.5rem;">
+                                <label for="book-availability" style="display: block; margin-bottom: 0.5rem; font-size: ${baseFontSize}px; font-weight: 600; color: ${config.text_color}; font-family: ${fontFamily};">Availability</label>
+                                <select id="book-availability" name="availability" required style="width: 100%; padding: 0.75rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-family: ${fontFamily};">
+                                    <option value="buy">Buy</option>
+                                    <option value="borrow">Borrow</option>
+                                    <option value="both">Buy & Borrow</option>
+                                </select>
+                            </div>
+                            
+                            <div style="margin-bottom: 1.5rem;">
+                                <label for="book-description" style="display: block; margin-bottom: 0.5rem; font-size: ${baseFontSize}px; font-weight: 600; color: ${config.text_color}; font-family: ${fontFamily};">Description</label>
+                                <textarea id="book-description" name="description" rows="4" required style="width: 100%; padding: 0.75rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-family: ${fontFamily};"></textarea>
+                            </div>
+                            
+                            <div style="margin-bottom: 1.5rem;">
+                                <label for="book-image" style="display: block; margin-bottom: 0.5rem; font-size: ${baseFontSize}px; font-weight: 600; color: ${config.text_color}; font-family: ${fontFamily};">Book Cover Image</label>
+                                <input type="file" id="book-image" name="image" accept="image/*" style="width: 100%; padding: 0.75rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-family: ${fontFamily};">
+                            </div>
+                            
+                            <button type="submit" style="width: 100%; padding: 1rem; background-color: ${config.primary_color}; color: white; border: none; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-weight: 600; cursor: pointer; font-family: ${fontFamily};">Add Book</button>
+                        </form>
+                    </div>
+                </main>
+            `;
+        }
+
+        function renderCart() {
+            const fontFamily = `${config.font_family}, sans-serif`;
+            const baseFontSize = config.font_size;
+            const cartItemsData = getCartItemsForUser();
+            const books = getBooks();
+            
+            const cartWithBooks = cartItemsData.map(item => ({
+                ...item,
+                book: books.find(b => b.id === item.book_id)
+            })).filter(item => item.book);
+            
+           const subtotal = cartWithBooks.reduce(
+                    (sum, item) => sum + (item.book.price * item.quantity),
+                    0
+                );
+
+                let discount = 0;
+                let total = subtotal;
+
+                // Apply discount ONLY if coupon is applied
+                if (couponApplied && subtotal > 1000) {
+                    discount = subtotal * 0.10;
+                    total = subtotal - discount;
+                }
+
+
+            
+            return `
+                <main style="padding: 2rem 1.5rem;">
+                    <div style="max-width: 1200px; margin: 0 auto;">
+                        <h2 style="font-size: ${baseFontSize * 2}px; font-weight: bold; margin-bottom: 2rem; color: ${config.text_color}; font-family: ${fontFamily};">Shopping Cart</h2>
+                        
+                        ${cartWithBooks.length === 0 ? `
+                            <div style="text-align: center; padding: 3rem; background-color: ${config.surface_color}; border-radius: 1rem;">
+                                <p style="font-size: ${baseFontSize * 1.25}px; color: ${config.text_color}; opacity: 0.7; margin-bottom: 1.5rem; font-family: ${fontFamily};">Your cart is empty</p>
+                                <button onclick="navigateTo('browse')" style="padding: 0.75rem 1.5rem; background-color: ${config.primary_color}; color: white; border: none; border-radius: 0.5rem; cursor: pointer; font-size: ${baseFontSize}px; font-family: ${fontFamily};">Browse Books</button>
+                            </div>
+                        ` : `
+                            <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 2rem;">
+                                <div>
+                                    ${cartWithBooks.map(item => `
+                                        <div style="background-color: ${config.surface_color}; padding: 1.5rem; border-radius: 0.75rem; margin-bottom: 1rem; display: flex; gap: 1.5rem; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                                            <div style="width: 100px; height: 140px; background: linear-gradient(135deg, ${config.primary_color}, ${config.secondary_color}); border-radius: 0.5rem; flex-shrink: 0; display: flex; align-items: center; justify-content: center; overflow: hidden;">
+                                                ${item.book.image ? `
+                                                    <img src="${item.book.image}" alt="${item.book.title}" style="width: 100%; height: 100%; object-fit: cover;">
+                                                ` : `
+                                                    <span style="font-size: ${baseFontSize * 2}px; color: white;">📚</span>
+                                                `}
+                                            </div>
+                                            <div style="flex: 1;">
+                                                <h3 style="font-size: ${baseFontSize * 1.25}px; font-weight: 600; margin-bottom: 0.5rem; color: ${config.text_color}; font-family: ${fontFamily};">${item.book.title}</h3>
+                                                <p style="font-size: ${baseFontSize * 0.9}px; color: ${config.text_color}; opacity: 0.7; margin-bottom: 0.5rem; font-family: ${fontFamily};">by ${item.book.author}</p>
+                                                <p style="font-size: ${baseFontSize * 1.1}px; font-weight: bold; color: ${config.primary_color}; margin-bottom: 1rem; font-family: ${fontFamily};">₹${item.book.price.toFixed(2)}</p>
+                                                <button onclick="removeFromCart('${item.id}')" style="padding: 0.5rem 1rem; background-color: #ef4444; color: white; border: none; border-radius: 0.5rem; cursor: pointer; font-size: ${baseFontSize * 0.9}px; font-family: ${fontFamily};">Remove</button>
+                                            </div>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                                
+                                <div style="background-color: ${config.surface_color}; padding: 1.5rem; border-radius: 0.75rem; height: fit-content; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                                    <h3 style="font-size: ${baseFontSize * 1.5}px; font-weight: bold; margin-bottom: 1.5rem; color: ${config.text_color}; font-family: ${fontFamily};">Order Summary</h3>
+                                    <div style="margin-bottom:1rem;">
+                                                <input type="text"
+                                                    id="couponInput"
+                                                    placeholder="Enter Coupon Code"
+                                                    style="width:100%; padding:8px; border:1px solid #ccc; border-radius:6px;">
+                                                    
+                                                <button onclick="applyCoupon()"
+                                                    style="margin-top:8px; width:100%;
+                                                    padding:8px;
+                                                    background:${config.secondary_color};
+                                                    color:white;
+                                                    border:none;
+                                                    border-radius:6px;">
+                                                    Apply Coupon
+                                                </button>
+                                     </div>
+
+                                    <div style="margin-bottom: 1rem; padding-bottom: 1rem; border-bottom: 1px solid #e2e8f0;">
+                                        <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
+                                            <span style="font-size: ${baseFontSize}px; color: ${config.text_color}; font-family: ${fontFamily};">Items (${cartWithBooks.length})</span>
+                                            <span style="font-size: ${baseFontSize}px; color: ${config.text_color}; font-family: ${fontFamily};">₹${subtotal.toFixed(2)}</span>
+                                        </div>
+                                    </div>
+
+                                    ${discount > 0 ? `
+                                        <div style="display:flex; justify-content:space-between; margin-bottom:0.75rem; color:green;">
+                                            <span>Coupon Discount (10%)</span>
+                                            <span>- ₹${discount.toFixed(2)}</span>
+                                        </div>
+                                        ` : ''}
+
+                                    <div style="display: flex; justify-content: space-between; margin-bottom: 1.5rem;">
+                                        <span style="font-size: ${baseFontSize * 1.25}px; font-weight: bold; color: ${config.text_color}; font-family: ${fontFamily};">Total</span>
+                                        <span style="font-size: ${baseFontSize * 1.25}px; font-weight: bold; color: ${config.primary_color}; font-family: ${fontFamily};">₹${total.toFixed(2)}</span>
+                                    </div>
+                                    <form id="checkoutForm">
+                                        <button type="submit" style="width: 100%; padding: 1rem; background-color: ${config.primary_color}; color: white; border: none; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-weight: 600; cursor: pointer; font-family: ${fontFamily};">Proceed to Checkout</button>
+                                    </form>
+                                </div>
+                            </div>
+                        `}
+                    </div>
+                </main>
+            `;
+        }
+
+        function renderTestimonials() {
+            const fontFamily = `${config.font_family}, sans-serif`;
+            const baseFontSize = config.font_size;
+            const testimonials = getTestimonials();
+            
+            return `
+                <main style="padding: 2rem 1.5rem;">
+                    <div style="max-width: 1200px; margin: 0 auto;">
+                        <h2 style="font-size: ${baseFontSize * 2}px; font-weight: bold; margin-bottom: 2rem; color: ${config.text_color}; font-family: ${fontFamily};">Testimonials & Feedback</h2>
+                        
+                        ${currentUser ? `
+                            <div style="background-color: ${config.surface_color}; padding: 2rem; border-radius: 1rem; margin-bottom: 2rem; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                                <h3 style="font-size: ${baseFontSize * 1.5}px; font-weight: 600; margin-bottom: 1.5rem; color: ${config.text_color}; font-family: ${fontFamily};">Share Your Experience</h3>
+                                <form id="testimonialForm">
+                                    <div style="margin-bottom: 1rem;">
+                                        <label for="rating" style="display: block; margin-bottom: 0.5rem; font-size: ${baseFontSize}px; color: ${config.text_color}; font-family: ${fontFamily};">Rating</label>
+                                        <select id="rating" name="rating" required style="width: 100%; padding: 0.75rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-family: ${fontFamily};">
+                                            <option value="5">5 Stars - Excellent</option>
+                                            <option value="4">4 Stars - Very Good</option>
+                                            <option value="3">3 Stars - Good</option>
+                                            <option value="2">2 Stars - Fair</option>
+                                            <option value="1">1 Star - Poor</option>
+                                        </select>
+                                    </div>
+                                    <div style="margin-bottom: 1rem;">
+    <label>Email</label>
+    <input type="text"
+           value="${currentUser.email}"
+           readonly
+           style="width:100%; padding:0.75rem; background:#f1f5f9;">
+</div>
+
+                                    <div style="margin-bottom: 1rem;">
+                                       <label for="mobile" 
+                                        style="display:block; margin-bottom:0.5rem; font-size:${baseFontSize}px;">
+                                            Mobile Number
+                                       </label>
+    <input 
+        type="text" 
+        id="mobile" 
+        name="mobile"
+        placeholder="Enter 10-digit mobile number"
+        required
+        style="width:100%; padding:0.75rem; border:1px solid #e2e8f0; border-radius:0.5rem;">
+</div>
+
+                                    <div style="margin-bottom: 1rem;">
+                                        <label for="comment" style="display: block; margin-bottom: 0.5rem; font-size: ${baseFontSize}px; color: ${config.text_color}; font-family: ${fontFamily};">Your Feedback</label>
+                                        <textarea id="comment" name="comment" rows="4" required style="width: 100%; padding: 0.75rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-family: ${fontFamily};"></textarea>
+                                    </div>
+                                    <button type="submit" style="padding: 0.75rem 1.5rem; background-color: ${config.primary_color}; color: white; border: none; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-weight: 600; cursor: pointer; font-family: ${fontFamily};">Submit Feedback</button>
+                                    <button type="button"
+                                        onclick="clearFeedbackForm()"
+                                        style="margin-left:10px; 
+                                        padding: 0.75rem 1.5rem; 
+                                        background-color: ${config.secondary_color}; 
+                                        color: white; 
+                                        border: none; border-radius: 0.5rem; font-size: ${baseFontSize}px; font-weight: 600; cursor: pointer; font-family: ${fontFamily};">
+                                        Clear Form 
+                                    </button>
+
+                                </form>
+                            </div>
+                        ` : `
+                            <div style="background-color: ${config.surface_color}; padding: 2rem; border-radius: 1rem; margin-bottom: 2rem; text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                                <p style="font-size: ${baseFontSize}px; color: ${config.text_color}; margin-bottom: 1rem; font-family: ${fontFamily};">Please login to share your feedback</p>
+                                <button onclick="navigateTo('login')" style="padding: 0.75rem 1.5rem; background-color: ${config.primary_color}; color: white; border: none; border-radius: 0.5rem; cursor: pointer; font-size: ${baseFontSize}px; font-family: ${fontFamily};">Login</button>
+                            </div>
+                        `}
+                        
+                        ${testimonials.length === 0 ? `
+                            <div style="text-align: center; padding: 3rem;">
+                                <p style="font-size: ${baseFontSize * 1.25}px; color: ${config.text_color}; opacity: 0.7; font-family: ${fontFamily};">No testimonials yet. Be the first to share your experience!</p>
+                            </div>
+                        ` : `
+                            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1.5rem;">
+                                ${testimonials.map(t => `
+                                    <div style="background-color: ${config.surface_color}; padding: 1.5rem; border-radius: 0.75rem; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                                        <div style="display: flex; gap: 0.25rem; margin-bottom: 0.75rem;">
+                                            ${Array(t.rating).fill('★').map(() => `<span style="color: ${config.secondary_color}; font-size: ${baseFontSize * 1.25}px;">★</span>`).join('')}
+                                            ${Array(5 - t.rating).fill('☆').map(() => `<span style="color: #d1d5db; font-size: ${baseFontSize * 1.25}px;">☆</span>`).join('')}
+                                        </div>
+                                        <p style="font-size: ${baseFontSize}px; margin-bottom: 1rem; color: ${config.text_color}; line-height: 1.6; font-family: ${fontFamily};">${t.comment}</p>
+                                        <p style="font-size: ${baseFontSize * 0.9}px; font-weight: 600; color: ${config.text_color}; font-family: ${fontFamily};">- ${t.user_name}</p>
+                                        <p style="font-size: ${baseFontSize * 0.75}px; color: ${config.text_color}; opacity: 0.5; margin-top: 0.25rem; font-family: ${fontFamily};">${new Date(t.created_at).toLocaleDateString()}</p>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        `}
+                    </div>
+                </main>
+            `;
+        }
+
+        function renderOrders() {
+            const fontFamily = `${config.font_family}, sans-serif`;
+            const baseFontSize = config.font_size;
+            const orders = allData.filter(i => i.type === 'order' && i.owner_id === (currentUser ? currentUser.id : null)).sort((a,b)=> b.created_at.localeCompare(a.created_at));
+
+            if (!orders || orders.length === 0) {
+                return `
+                    <main style="padding: 2rem 1.5rem;">
+                        <div style="max-width: 1200px; margin: 0 auto; text-align:center;">
+                            <p style="font-size: ${baseFontSize * 1.1}px; color: ${config.text_color};">You have no orders yet.</p>
+                        </div>
+                    </main>
+                `;
+            }
+
+            return `
+                <main style="padding: 2rem 1.5rem;">
+                    <div style="max-width: 1200px; margin: 0 auto;">
+                        <h2 style="font-size: ${baseFontSize * 2}px; font-weight: bold; margin-bottom: 1.5rem; color: ${config.text_color}; font-family: ${fontFamily};">My Orders</h2>
+                        <div style="display:grid;gap:1rem;">
+                            ${orders.map(o => `
+                                <div style="background-color: ${config.surface_color}; padding: 1rem; border-radius: 0.75rem;">
+                                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;">
+                                        <div>
+                                            <div style="font-weight:700;color:${config.text_color};">Order ${o.id}</div>
+                                            <div style="font-size:12px;color:rgba(0,0,0,0.45);">${new Date(o.created_at).toLocaleString()}</div>
+                                        </div>
+                                        <div style="text-align:right">
+                                            <div style="font-weight:700;color:${config.primary_color};">₹${o.total.toFixed(2)}</div>
+                                            <div style="font-size:12px;color:rgba(0,0,0,0.45);">${o.payment_method === 'online' ? `Online • ****${(o.card && o.card.last4) || '----'}` : 'COD'}</div>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        ${(o.items || []).map(it => `
+                                            <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-top:1px solid rgba(0,0,0,0.04);">
+                                                <div>
+                                                    <div style="font-weight:600;color:${config.text_color};">${it.title}</div>
+                                                    <div style="font-size:12px;color:rgba(0,0,0,0.45)">${it.borrow_return_date ? `Return by ${it.borrow_return_date}` : ''}</div>
+                                                </div>
+                                                <div>
+                                                    ${it.borrow_return_date ? `` : ''}
+                                                </div>
+                                            </div>
+                                        `).join('')}
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                </main>
+            `;
+        }
+
+        async function markReturnedInApp(orderId, bookId) {
+            if (!currentUser) { showToast('Please login', 'error'); return; }
+            const rec = {
+                id: 'ret-' + Date.now().toString(),
+                type: 'return',
+                order_id: orderId,
+                book_id: bookId,
+                returned_at: new Date().toISOString()
+            };
+            const res = await window.dataSdk.create(rec);
+            if (res.isOk) {
+                showToast('Marked as returned', 'success');
+                render();
+            } else {
+                showToast('Failed to mark return', 'error');
+            }
+        }
+
+        window.markReturnedInApp = markReturnedInApp;
+
+        // Background profile helpers: keep a lightweight profile per user updated in the data store
+        async function upsertProfileOnLogin(user) {
+            // find existing profile
+            const existing = allData.find(i => i.type === 'profile' && i.owner_id === user.id);
+            const now = new Date().toISOString();
+            const profile = Object.assign({}, existing || {}, {
+                id: existing ? existing.id : ('profile-' + user.id),
+                type: 'profile',
+                owner_id: user.id,
+                name: user.name,
+                email: user.email,
+                last_login: now,
+                updated_at: now
+            });
+
+            if (existing) {
+                // replace by deleting and creating (stub supports delete/create)
+                await window.dataSdk.delete(existing.id);
+            }
+            await window.dataSdk.create(profile);
+        }
+
+        async function upsertProfileWithOrder(order) {
+            if (!order || !order.owner_id) return;
+            const userId = order.owner_id;
+            const existing = allData.find(i => i.type === 'profile' && i.owner_id === userId);
+            const now = new Date().toISOString();
+
+            // base profile
+            const base = existing ? Object.assign({}, existing) : {
+                id: 'profile-' + userId,
+                type: 'profile',
+                owner_id: userId,
+                name: '',
+                email: ''
+            };
+
+            // compute aggregates
+            const prevOrders = (allData || []).filter(i => i.type === 'order' && i.owner_id === userId);
+            const ordersCount = prevOrders.length + 1; // include this new one
+            const prevTotal = prevOrders.reduce((s, o) => s + (o.total || 0), 0);
+            const totalSpent = (prevTotal + (order.total || 0));
+
+            // addresses history
+            const addresses = (base.addresses && Array.isArray(base.addresses)) ? base.addresses.slice() : [];
+            if (order.address && !addresses.includes(order.address)) addresses.push(order.address);
+
+            // borrowed books list: keep small objects
+            const borrowed = (base.borrowed_books && Array.isArray(base.borrowed_books)) ? base.borrowed_books.slice() : [];
+            for (const it of (order.items || [])) {
+                if (it.borrow_return_date) {
+                    borrowed.push({ book_id: it.book_id, title: it.title, return_date: it.borrow_return_date, order_id: order.id });
+                }
+            }
+
+            const profile = Object.assign({}, base, {
+                id: base.id,
+                type: 'profile',
+                owner_id: userId,
+                orders_count: ordersCount,
+                total_spent: totalSpent,
+                addresses,
+                borrowed_books: borrowed,
+                last_order_at: order.created_at || now,
+                updated_at: now
+            });
+
+            if (existing) {
+                await window.dataSdk.delete(existing.id);
+            }
+            await window.dataSdk.create(profile);
+        }
+
+        function attachEventListeners() {
+            const loginForm = document.getElementById('loginForm');
+            if (loginForm) {
+                loginForm.removeEventListener('submit', handleLogin);
+                loginForm.addEventListener('submit', handleLogin);
+            }
+            
+            const registerForm = document.getElementById('registerForm');
+            if (registerForm) {
+                registerForm.removeEventListener('submit', handleRegister);
+                registerForm.addEventListener('submit', handleRegister);
+            }
+            
+            const addBookForm = document.getElementById('addBookForm');
+            if (addBookForm) {
+                addBookForm.removeEventListener('submit', handleAddBook);
+                addBookForm.addEventListener('submit', handleAddBook);
+            }
+            
+            const checkoutForm = document.getElementById('checkoutForm');
+            if (checkoutForm) {
+                checkoutForm.removeEventListener('submit', handleCheckout);
+                checkoutForm.addEventListener('submit', handleCheckout);
+            }
+            
+            const testimonialForm = document.getElementById('testimonialForm');
+            if (testimonialForm) {
+                testimonialForm.removeEventListener('submit', submitTestimonial);
+                testimonialForm.addEventListener('submit', submitTestimonial);
+            }
+            
+            const bookReviewForm = document.getElementById('bookReviewForm');
+            if (bookReviewForm) {
+                bookReviewForm.removeEventListener('submit', submitBookReview);
+                bookReviewForm.addEventListener('submit', submitBookReview);
+            }
+            
+            const searchInput = document.getElementById('searchInput');
+            if (searchInput) {
+                searchInput.removeEventListener('input', handleSearchInput);
+                searchInput.addEventListener('input', handleSearchInput);
+            }
+            
+            const categoryFilter = document.getElementById('categoryFilter');
+            if (categoryFilter) {
+                categoryFilter.removeEventListener('change', handleCategoryChange);
+                categoryFilter.addEventListener('change', handleCategoryChange);
+            }
+        }
+
+        function handleSearchInput(e) {
+            searchQuery = e.target.value;
+            // Update results without re-rendering the input
+            const fontFamily = `${config.font_family}, sans-serif`;
+            const baseFontSize = config.font_size;
+            const books = filterBooks();
+            
+            const resultsContainer = document.querySelector('main > div > div:last-child');
+            if (resultsContainer) {
+                if (books.length === 0) {
+                    resultsContainer.innerHTML = `
+                        <div style="text-align: center; padding: 3rem;">
+                            <p style="font-size: ${baseFontSize * 1.25}px; color: ${config.text_color}; opacity: 0.7; font-family: ${fontFamily};">No books found. ${currentUser ? 'Be the first to add one!' : 'Please login to add books.'}</p>
+                        </div>
+                    `;
+                } else {
+                    resultsContainer.innerHTML = `
+                        <div style="display: grid; grid-template-columns: repeat(4, minmax(220px, 1fr)); gap: 1.5rem;">
+                            ${books.map(book => `
+                                <div class="book-card" style="background-color: ${config.surface_color}; border-radius: 0.75rem; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="navigateTo('book-${book.id}')">
+                                    <div style="width: 100%; height: 200px; background: linear-gradient(135deg, ${config.primary_color}, ${config.secondary_color}); display: flex; align-items: center; justify-content: center;">
+                                        ${book.image ? `
+                                            <img src="${book.image}" alt="${book.title}" style="width: 100%; height: 100%; object-fit: cover;">
+                                        ` : `
+                                            <span style="font-size: ${baseFontSize * 3}px; color: white;">📚</span>
+                                        `}
+                                    </div>
+                                    <div style="padding: 1rem;">
+                                        <h3 style="font-size: ${baseFontSize * 1.1}px; font-weight: 600; margin-bottom: 0.5rem; color: ${config.text_color}; font-family: ${fontFamily};">${book.title}</h3>
+                                        <p style="font-size: ${baseFontSize * 0.9}px; color: ${config.text_color}; opacity: 0.7; margin-bottom: 0.5rem; font-family: ${fontFamily};">by ${book.author}</p>
+                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 1rem;">
+                                            <span style="font-size: ${baseFontSize * 1.1}px; font-weight: bold; color: ${config.primary_color}; font-family: ${fontFamily};">₹${book.price.toFixed(2)}</span>
+                                            <span style="padding: 0.25rem 0.75rem; background-color: ${config.secondary_color}; color: white; border-radius: 1rem; font-size: ${baseFontSize * 0.85}px; font-family: ${fontFamily};">${book.availability}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    `;
+                }
+            }
+        }
+
+        function handleCategoryChange(e) {
+            selectedCategory = e.target.value;
+            // Update results without re-rendering the input
+            const fontFamily = `${config.font_family}, sans-serif`;
+            const baseFontSize = config.font_size;
+            const books = filterBooks();
+            
+            const resultsContainer = document.querySelector('main > div > div:last-child');
+            if (resultsContainer) {
+                if (books.length === 0) {
+                    resultsContainer.innerHTML = `
+                        <div style="text-align: center; padding: 3rem;">
+                            <p style="font-size: ${baseFontSize * 1.25}px; color: ${config.text_color}; opacity: 0.7; font-family: ${fontFamily};">No books found. ${currentUser ? 'Be the first to add one!' : 'Please login to add books.'}</p>
+                        </div>
+                    `;
+                } else {
+                    resultsContainer.innerHTML = `
+                        <div style="display: grid; grid-template-columns: repeat(4, minmax(220px, 1fr)); gap: 1.5rem;">
+                            ${books.map(book => `
+                                <div class="book-card" style="background-color: ${config.surface_color}; border-radius: 0.75rem; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="navigateTo('book-${book.id}')">
+                                    <div style="width: 100%; height: 200px; background: linear-gradient(135deg, ${config.primary_color}, ${config.secondary_color}); display: flex; align-items: center; justify-content: center;">
+                                        ${book.image ? `
+                                            <img src="${book.image}" alt="${book.title}" style="width: 100%; height: 100%; object-fit: cover;">
+                                        ` : `
+                                            <span style="font-size: ${baseFontSize * 3}px; color: white;">📚</span>
+                                        `}
+                                    </div>
+                                    <div style="padding: 1rem;">
+                                        <h3 style="font-size: ${baseFontSize * 1.1}px; font-weight: 600; margin-bottom: 0.5rem; color: ${config.text_color}; font-family: ${fontFamily};">${book.title}</h3>
+                                        <p style="font-size: ${baseFontSize * 0.9}px; color: ${config.text_color}; opacity: 0.7; margin-bottom: 0.5rem; font-family: ${fontFamily};">by ${book.author}</p>
+                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 1rem;">
+                                            <span style="font-size: ${baseFontSize * 1.1}px; font-weight: bold; color: ${config.primary_color}; font-family: ${fontFamily};">₹${book.price.toFixed(2)}</span>
+                                            <span style="padding: 0.25rem 0.75rem; background-color: ${config.secondary_color}; color: white; border-radius: 1rem; font-size: ${baseFontSize * 0.85}px; font-family: ${fontFamily};">${book.availability}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    `;
+                }
+            }
+        }
+
+        function navigateTo(view) {
+            currentView = view;
+            window.scrollTo(0, 0);
+            render();
+        }
+
+        window.navigateTo = navigateTo;
+        window.handleLogout = handleLogout;
+        window.addToCart = addToCart;
+        window.removeFromCart = removeFromCart;
+    window.importDataset = importDataset;
+    window.exportOrdersCSV = exportOrdersCSV;
+
+        initApp();
+
+        // Import dataset (developer helper) — replaces the local fallback store and reloads
+        async function importDataset() {
+            if (!confirm('This will overwrite local test data in localStorage. Continue?')) return;
+            try {
+                const res = await fetch('orders_dataset.json');
+                if (!res.ok) throw new Error('Could not fetch orders_dataset.json');
+                const data = await res.json();
+                localStorage.setItem('booklend_store', JSON.stringify(data));
+                showToast('Dataset imported — reloading', 'success');
+                setTimeout(() => location.reload(), 700);
+            } catch (e) {
+                console.error(e);
+                showToast('Failed to import dataset', 'error');
+            }
+        }
+
+        // Export orders to CSV and trigger download
+        function exportOrdersCSV() {
+            try {
+                const orders = (allData || []).filter(i => i.type === 'order');
+                if (!orders || orders.length === 0) { showToast('No orders to export', 'error'); return; }
+
+                const rows = [];
+                rows.push(['order_id','owner_id','owner_name','payment_method','card_last4','address','items','total','created_at']);
+                for (const o of orders) {
+                    const owner = (allData || []).find(x => x.type === 'user' && x.id === o.owner_id);
+                    const ownerName = owner ? owner.name : '';
+                    const cardLast4 = o.card && o.card.last4 ? o.card.last4 : '';
+                    const items = (o.items || []).map(it => `${it.title} (x${it.quantity||1})`).join(' | ');
+                    rows.push([o.id, o.owner_id, ownerName, o.payment_method, cardLast4, o.address.replace(/\n/g,' '), items, o.total, o.created_at]);
+                }
+
+                const csv = rows.map(r => r.map(cell => `"${String(cell).replace(/"/g,'""')}"`).join(',')).join('\n');
+                const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = 'orders_export.csv'; document.body.appendChild(a); a.click(); a.remove();
+                URL.revokeObjectURL(url);
+                showToast('Orders exported as CSV', 'success');
+            } catch (e) {
+                console.error(e);
+                showToast('Failed to export CSV', 'error');
+            }
+        }
+
+        // Export all activity records to an Excel (.xlsx) file using SheetJS if available
+        function exportActivitiesExcel() {
+            try {
+                const data = allData || [];
+                if (!data || data.length === 0) { showToast('No data available to export', 'error'); return; }
+
+                // Map each record to a flat row for Excel
+                const rows = data.map(item => {
+                    return {
+                        event_id: item.id || '',
+                        type: item.type || '',
+                        user_id: item.owner_id || item.user_id || item.owner || '',
+                        related_book_id: item.book_id || item.book_id || '',
+                        title: item.title || item.user_name || item.name || '',
+                        details: (() => {
+                            // small summary depending on type
+                            if (item.type === 'order') return `total:${item.total || 0} items:${(item.items||[]).length}`;
+                            if (item.type === 'login') return 'login event';
+                            if (item.type === 'return') return 'return event';
+                            if (item.type === 'book') return `author:${item.author || ''}`;
+                            if (item.type === 'cart') return `quantity:${item.quantity || 1}`;
+                            return JSON.stringify(item).slice(0, 120);
+                        })(),
+                        created_at: item.created_at || item.returned_at || item.logged_at || ''
+                    };
+                });
+
+                if (window.XLSX && typeof XLSX.utils !== 'undefined') {
+                    const ws = XLSX.utils.json_to_sheet(rows);
+                    const wb = XLSX.utils.book_new();
+                    XLSX.utils.book_append_sheet(wb, ws, 'activities');
+                    XLSX.writeFile(wb, 'booklend_activities.xlsx');
+                    showToast('Activities exported to Excel', 'success');
+                } else {
+                    // Fallback: export CSV
+                    const cols = Object.keys(rows[0]);
+                    const csvRows = [cols.join(',')].concat(rows.map(r => cols.map(c => `"${String(r[c]||'').replace(/"/g,'""')}"`).join(','))).join('\n');
+                    const blob = new Blob([csvRows], { type: 'text/csv;charset=utf-8;' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a'); a.href = url; a.download = 'booklend_activities.csv'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+                    showToast('Activities exported as CSV (SheetJS not loaded)', 'success');
+                }
+            } catch (e) {
+                console.error(e);
+                showToast('Failed to export activities', 'error');
+            }
+        }
+        window.exportActivitiesExcel = exportActivitiesExcel;
+
+        // Developer shortcut: Ctrl+Shift+E exports activities to Excel/CSV
+        window.addEventListener('keydown', (ev) => {
+            if (ev.ctrlKey && ev.shiftKey && ev.key.toLowerCase() === 'e') {
+                exportActivitiesExcel();
+            }
+        });
+        function clearFeedbackForm() {
+    document.getElementById("testimonialForm").reset();
+    showToast("Thank you!", "success");
+}
+    window.clearFeedbackForm = clearFeedbackForm;
+
+//toggle button 
+
+
+function toggleCoupon() {
+    const box = document.getElementById("couponBox");
+    box.style.display = box.style.display === "none" ? "block" : "none";
+}
+
+//coupon apply
+
+let couponApplied = false;
+
+function applyCoupon() {
+    const code = document.getElementById("couponInput").value;
+
+    if (code === "BOOK10") {
+        couponApplied = true;
+        showToast("Coupon Applied Successfully!", "success");
+        render(); // re-render cart
+    } else {
+        showToast("Invalid Coupon Code", "error");
+    }
+}
+
+
+
+//Excel     
+
+function logActivity(activity, details = '') {
+    if (!currentUser) return;
+
+    fetch("https://script.google.com/macros/s/AKfycbwPg0vWaL8NhfjPCpiPEyiQtPhfzVbsqCoHwqO7sMv4QQxFPlLr2bJdClcR5LjQCEbRsA/exec", {
+        method: "POST",
+        mode: "no-cors",   // ⭐ VERY IMPORTANT
+        headers: {
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            user_id: currentUser.id,
+            user_name: currentUser.name,
+            activity: activity,
+            details: details
+        })
+    });
+}
+
+
+
+    </script>
+ <script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'9b2c51cf158084d1',t:'MTc2NjUzOTY4MS4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</html>
